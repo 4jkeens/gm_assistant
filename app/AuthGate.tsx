@@ -62,7 +62,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     const { error } = await supabase.auth.signInWithOtp({
       email: normalized,
       options: {
-        shouldCreateUser: false,
+        shouldCreateUser: true,
         emailRedirectTo: window.location.origin,
       },
     });
