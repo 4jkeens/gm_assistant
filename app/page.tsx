@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../lib/supabase";
 
 type TaskKind = "meeting" | "due" | "maintenance" | "allDay";
 type ViewMode = "dashboard" | "daily" | "weekly" | "maintenance";
@@ -19,6 +20,9 @@ type Task = {
   dismissed?: boolean;
   canceled?: boolean;
   snoozedUntil?: number | null;
+  sourceType?: "prototype" | "manual";
+  dueAt?: string | null;
+  startsAt?: string | null;
 };
 
 const seedTasks: Task[] = [
@@ -93,9 +97,18 @@ function parseTodayTime(value?: string) {
   return d;
 }
 
-function minutesUntil(task: Task, now: Date) {
+function taskTarget(task: Task) {
+  const cloudValue = task.kind === "due" ? task.dueAt : task.startsAt;
+  if (cloudValue) {
+    const cloudDate = new Date(cloudValue);
+    if (!Number.isNaN(cloudDate.getTime())) return cloudDate;
+  }
   const value = task.kind === "due" ? task.dueTime : task.time;
-  const target = parseTodayTime(value);
+  return parseTodayTime(value);
+}
+
+function minutesUntil(task: Task, now: Date) {
+  const target = taskTarget(task);
   if (!target) return null;
   return Math.ceil((target.getTime() - now.getTime()) / 60000);
 }
@@ -180,6 +193,109 @@ export default function Dashboard() {
   const [tomorrowConfirmed, setTomorrowConfirmed] = useState(false);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const loadCloudTasks = async () => {
+    const [{ data: taskRows }, { data: stateRows }] = await Promise.all([
+      supabase
+        .from("manual_tasks")
+        .select("id,title,notes,task_mode,due_at,starts_at,critical,category,pin_by_default")
+        .eq("enabled", true)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("task_occurrence_state")
+        .select("occurrence_key,acknowledged_at,completed_at,snoozed_until,pinned_at,dismissed_at")
+        .eq("source_type", "manual"),
+    ]);
+
+    if (!taskRows) return;
+
+    const stateMap = new Map((stateRows || []).map((row) => [row.occurrence_key, row]));
+    const manualIds = new Set(taskRows.map((row) => row.id));
+    const pinnedIds: string[] = [];
+
+    const cloudTasks: Task[] = taskRows.map((row) => {
+      const state = stateMap.get(`manual:${row.id}`);
+      const when = row.task_mode === "due_by" ? row.due_at : row.starts_at;
+      const timeLabel = when
+        ? new Date(when).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : undefined;
+      const pinned = Boolean(state?.pinned_at) || (!state && Boolean(row.pin_by_default));
+      if (pinned && !state?.completed_at) pinnedIds.push(row.id);
+
+      return {
+        id: row.id,
+        title: row.title,
+        kind: row.category === "maintenance" ? "maintenance" : row.task_mode === "due_by" ? "due" : "meeting",
+        time: row.task_mode === "scheduled_start" ? timeLabel : undefined,
+        dueTime: row.task_mode === "due_by" ? timeLabel : undefined,
+        description: row.notes || undefined,
+        critical: Boolean(row.critical),
+        acknowledged: Boolean(state?.acknowledged_at),
+        completed: Boolean(state?.completed_at),
+        dismissed: Boolean(state?.dismissed_at),
+        snoozedUntil: state?.snoozed_until ? new Date(state.snoozed_until).getTime() : null,
+        sourceType: "manual",
+        dueAt: row.due_at,
+        startsAt: row.starts_at,
+      };
+    });
+
+    setTasks((current) => [
+      ...current.filter((task) => task.sourceType !== "manual"),
+      ...cloudTasks,
+    ]);
+    setFollowUp((current) => [
+      ...current.filter((id) => !manualIds.has(id)),
+      ...pinnedIds.filter((id) => !current.includes(id)),
+    ]);
+  };
+
+  const pollDeviceCommands = async () => {
+    const { data: commands } = await supabase
+      .from("device_commands")
+      .select("id,command_type,payload,created_at,expires_at")
+      .eq("target_device", "tablet")
+      .is("acknowledged_at", null)
+      .order("created_at", { ascending: true });
+
+    if (!commands?.length) return;
+
+    for (const command of commands) {
+      if (command.expires_at && new Date(command.expires_at).getTime() < Date.now()) {
+        await supabase
+          .from("device_commands")
+          .update({ acknowledged_at: new Date().toISOString() })
+          .eq("id", command.id);
+        continue;
+      }
+
+      if (command.command_type === "test_alert") {
+        const alertId = `cloud-test-${command.id}`;
+        setTasks((current) =>
+          current.some((task) => task.id === alertId)
+            ? current
+            : [
+                {
+                  id: alertId,
+                  title: command.payload?.title || "Test Alert",
+                  kind: "due",
+                  dueTime: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+                  description: "Admin cloud test alert — tablet connection is working.",
+                  critical: true,
+                  sourceType: "prototype",
+                },
+                ...current,
+              ]
+        );
+        setDimmed(false);
+      }
+
+      await supabase
+        .from("device_commands")
+        .update({ acknowledged_at: new Date().toISOString() })
+        .eq("id", command.id);
+    }
+  };
+
   useEffect(() => {
     const stored = localStorage.getItem("gm-dashboard-prototype");
     if (stored) {
@@ -211,6 +327,17 @@ export default function Dashboard() {
       }
     });
     return () => channel?.close();
+  }, []);
+
+  useEffect(() => {
+    loadCloudTasks();
+    pollDeviceCommands();
+    const taskRefresh = setInterval(loadCloudTasks, 15 * 1000);
+    const commandRefresh = setInterval(pollDeviceCommands, 4 * 1000);
+    return () => {
+      clearInterval(taskRefresh);
+      clearInterval(commandRefresh);
+    };
   }, []);
 
   useEffect(() => {
