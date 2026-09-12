@@ -68,7 +68,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     });
 
     if (error) {
-      setMessage("That email is not approved for this GM Dashboard.");
+      setMessage(error.message || "Sign-in failed. Please try again.");
     } else {
       setMessage("Check your email for the GM Dashboard sign-in link.");
     }
