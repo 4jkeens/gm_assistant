@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import PinGate from "./PinGate";
 
 export const metadata: Metadata = {
   title: "GM Dashboard",
@@ -20,7 +21,7 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><PinGate>{children}</PinGate></body>
     </html>
   );
 }
