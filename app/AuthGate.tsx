@@ -4,12 +4,10 @@ import { FormEvent, useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 
-const ALLOWED_EMAIL = "jason.keen@calibercollision.com";
-
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
-  const [email, setEmail] = useState(ALLOWED_EMAIL);
+  const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState("");
   const [accessDenied, setAccessDenied] = useState(false);
@@ -35,13 +33,8 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
       if (!active) return;
 
-      if (error) {
-        setSession(nextSession);
-        setAccessDenied(true);
-      } else {
-        setSession(nextSession);
-        setAccessDenied(false);
-      }
+      setSession(nextSession);
+      setAccessDenied(Boolean(error));
       setChecking(false);
     };
 
@@ -65,23 +58,19 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     setMessage("");
 
     const normalized = email.trim().toLowerCase();
-    if (normalized !== ALLOWED_EMAIL) {
-      setMessage("This GM Dashboard is limited to the approved work email.");
-      setSending(false);
-      return;
-    }
 
     const { error } = await supabase.auth.signInWithOtp({
       email: normalized,
       options: {
+        shouldCreateUser: false,
         emailRedirectTo: window.location.origin,
       },
     });
 
     if (error) {
-      setMessage(error.message);
+      setMessage("That email is not approved for this GM Dashboard.");
     } else {
-      setMessage("Check your Caliber email for the GM Dashboard sign-in link.");
+      setMessage("Check your email for the GM Dashboard sign-in link.");
     }
     setSending(false);
   };
@@ -104,9 +93,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         <div style={styles.card}>
           <div style={{ ...styles.logo, background: "#6b2430" }}>!</div>
           <h1 style={styles.title}>Access denied</h1>
-          <p style={styles.muted}>
-            {session.user.email || "This account"} is not approved for this GM Dashboard.
-          </p>
+          <p style={styles.muted}>This account is not approved for this GM Dashboard.</p>
           <button
             style={styles.button}
             onClick={async () => {
@@ -183,23 +170,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 900,
     letterSpacing: ".04em",
   },
-  title: {
-    margin: 0,
-    fontSize: 28,
-    letterSpacing: "-.03em",
-  },
-  muted: {
-    color: "#8fa0b4",
-    lineHeight: 1.5,
-    fontSize: 14,
-    margin: "8px 0 20px",
-  },
-  label: {
-    display: "block",
-    color: "#b8c6d6",
-    fontSize: 12,
-    marginBottom: 7,
-  },
+  title: { margin: 0, fontSize: 28, letterSpacing: "-.03em" },
+  muted: { color: "#8fa0b4", lineHeight: 1.5, fontSize: 14, margin: "8px 0 20px" },
+  label: { display: "block", color: "#b8c6d6", fontSize: 12, marginBottom: 7 },
   input: {
     width: "100%",
     border: "1px solid #344458",
@@ -222,10 +195,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     cursor: "pointer",
   },
-  message: {
-    margin: "12px 0 0",
-    color: "#a9c9e8",
-    fontSize: 12,
-    lineHeight: 1.45,
-  },
+  message: { margin: "12px 0 0", color: "#a9c9e8", fontSize: 12, lineHeight: 1.45 },
 };
