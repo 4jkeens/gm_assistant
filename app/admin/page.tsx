@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { supabase } from "../../lib/supabase";
 
 type ManualTask = {
   id: string;
@@ -11,6 +12,8 @@ type ManualTask = {
   recurrence: string;
   critical: boolean;
   notes: string;
+  pin: boolean;
+  taskMode: "due_by" | "scheduled_start";
 };
 
 const initialRules = [
@@ -25,15 +28,32 @@ const maintenance = [
   { name: "HVAC Filter Check", last: "Aug 28", next: "Sep 28", frequency: "Monthly", overdue: false },
 ];
 
+function toLocalParts(value: string | null) {
+  if (!value) return { date: "", time: "" };
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return { date: "", time: "" };
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return { date, time };
+}
+
+function makeLocalIso(date: string, time: string) {
+  if (!date) return null;
+  const d = new Date(`${date}T${time || "17:00"}:00`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export default function AdminPage() {
-  const [lastSync, setLastSync] = useState(new Date());
-  const [syncMessage, setSyncMessage] = useState("Connected");
+  const [lastSync, setLastSync] = useState<Date | null>(null);
+  const [syncMessage, setSyncMessage] = useState("Loading…");
   const [tasks, setTasks] = useState<ManualTask[]>([]);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     name: "",
     dueDate: "",
     dueTime: "",
     recurrence: "None",
+    taskMode: "Due By",
     critical: false,
     notes: "",
     alert1h: true,
@@ -45,40 +65,147 @@ export default function AdminPage() {
 
   const overdueMaintenance = useMemo(() => maintenance.filter((item) => item.overdue), []);
 
-  const testAlert = () => {
-    const channel = "BroadcastChannel" in window ? new BroadcastChannel("gm-dashboard") : null;
-    channel?.postMessage({ type: "test-alert", createdAt: Date.now() });
-    channel?.close();
-    localStorage.setItem("gm-dashboard-test-alert", String(Date.now()));
+  const loadCloudData = async () => {
+    const [{ data: taskRows, error: taskError }, { data: syncRow }] = await Promise.all([
+      supabase
+        .from("manual_tasks")
+        .select("id,title,notes,task_mode,due_at,starts_at,recurrence_type,critical,pin_by_default")
+        .eq("enabled", true)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("sync_state")
+        .select("status,last_success_at,last_error")
+        .eq("source", "outlook_ics")
+        .maybeSingle(),
+    ]);
+
+    if (!taskError && taskRows) {
+      setTasks(
+        taskRows.map((row) => {
+          const when = row.task_mode === "scheduled_start" ? row.starts_at : row.due_at;
+          const parts = toLocalParts(when);
+          return {
+            id: row.id,
+            name: row.title,
+            dueDate: parts.date,
+            dueTime: parts.time,
+            recurrence: row.recurrence_type
+              ? row.recurrence_type.charAt(0).toUpperCase() + row.recurrence_type.slice(1)
+              : "None",
+            critical: Boolean(row.critical),
+            notes: row.notes || "",
+            pin: Boolean(row.pin_by_default),
+            taskMode: row.task_mode,
+          };
+        })
+      );
+    }
+
+    if (syncRow) {
+      const labels: Record<string, string> = {
+        never_synced: "Not connected yet",
+        syncing: "Refreshing…",
+        connected: "Connected",
+        offline: "Offline",
+        error: "Error",
+      };
+      setSyncMessage(labels[syncRow.status] || syncRow.status);
+      setLastSync(syncRow.last_success_at ? new Date(syncRow.last_success_at) : null);
+    } else {
+      setSyncMessage("Not connected yet");
+    }
+  };
+
+  useEffect(() => {
+    loadCloudData();
+  }, []);
+
+  const testAlert = async () => {
+    const expires = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const { error } = await supabase.from("device_commands").insert({
+      command_type: "test_alert",
+      target_device: "tablet",
+      payload: { title: "Test Alert", source: "admin" },
+      expires_at: expires,
+    });
+
+    if (error) {
+      setSyncMessage("Test alert failed");
+      return;
+    }
+
     setSyncMessage("Test alert sent");
-    setTimeout(() => setSyncMessage("Connected"), 2000);
+    setTimeout(() => loadCloudData(), 1800);
   };
 
-  const refresh = () => {
+  const refresh = async () => {
     setSyncMessage("Refreshing…");
-    setTimeout(() => {
-      setLastSync(new Date());
-      setSyncMessage("Connected");
-    }, 650);
+    await loadCloudData();
   };
 
-  const createTask = (event: FormEvent) => {
+  const createTask = async (event: FormEvent) => {
     event.preventDefault();
     if (!form.name.trim()) return;
-    setTasks((current) => [
-      {
-        id: String(Date.now()),
-        name: form.name.trim(),
-        dueDate: form.dueDate,
-        dueTime: form.dueTime,
-        recurrence: form.recurrence,
-        critical: form.critical,
-        notes: form.notes,
-      },
+
+    setSaving(true);
+    const when = makeLocalIso(form.dueDate, form.dueTime);
+    const taskMode = form.taskMode === "Scheduled Start" ? "scheduled_start" : "due_by";
+    const categoryMap: Record<string, string> = {
+      Auto: "auto",
+      Critical: "critical",
+      "Due By": "due_by",
+      Meeting: "meeting",
+      Maintenance: "maintenance",
+    };
+
+    const alertMinutes = [
+      ...(form.alert1h ? [60] : []),
+      ...(form.alert30m ? [30] : []),
+      0,
+    ];
+
+    const { error } = await supabase.from("manual_tasks").insert({
+      title: form.name.trim(),
+      notes: form.notes || null,
+      task_mode: taskMode,
+      due_at: taskMode === "due_by" ? when : null,
+      starts_at: taskMode === "scheduled_start" ? when : null,
+      recurrence_type: form.recurrence.toLowerCase(),
+      critical: form.critical,
+      category: categoryMap[form.category] || "auto",
+      include_in_rundown: form.includeRundown,
+      pin_by_default: form.pin,
+      alert_minutes: alertMinutes,
+    });
+
+    setSaving(false);
+
+    if (error) {
+      setSyncMessage("Task save failed");
+      return;
+    }
+
+    setForm((current) => ({
       ...current,
-    ]);
-    setForm((current) => ({ ...current, name: "", dueDate: "", dueTime: "", notes: "", critical: false }));
+      name: "",
+      dueDate: "",
+      dueTime: "",
+      notes: "",
+      critical: false,
+      pin: false,
+    }));
+    await loadCloudData();
   };
+
+  const today = new Date();
+  const todayDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const dueToday = tasks.filter((task) => task.dueDate === todayDate).length;
+  const overdueTasks = tasks.filter((task) => {
+    if (!task.dueDate) return false;
+    const when = new Date(`${task.dueDate}T${task.dueTime || "23:59"}:00`);
+    return when.getTime() < Date.now();
+  }).length;
+  const followUpCount = tasks.filter((task) => task.pin).length;
 
   return (
     <main className="admin-shell">
@@ -95,14 +222,14 @@ export default function AdminPage() {
       </header>
 
       <section className="summary-grid">
-        <div className="summary-card"><span>Overdue Tasks</span><strong>2</strong></div>
-        <div className="summary-card"><span>Due Today</span><strong>6</strong></div>
-        <div className="summary-card"><span>Follow-Up</span><strong>4</strong></div>
+        <div className="summary-card"><span>Overdue Tasks</span><strong>{overdueTasks}</strong></div>
+        <div className="summary-card"><span>Due Today</span><strong>{dueToday}</strong></div>
+        <div className="summary-card"><span>Follow-Up</span><strong>{followUpCount}</strong></div>
         <div className="summary-card"><span>Maintenance Due</span><strong>{overdueMaintenance.length}</strong></div>
         <div className="summary-card sync">
           <span>Outlook Sync</span>
           <strong>{syncMessage}</strong>
-          <small>Last sync {lastSync.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small>
+          <small>{lastSync ? `Last sync ${lastSync.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "No successful Outlook sync yet"}</small>
         </div>
       </section>
 
@@ -134,7 +261,7 @@ export default function AdminPage() {
             </div>
             <div className="form-field">
               <label>Task type</label>
-              <select defaultValue="Due By">
+              <select value={form.taskMode} onChange={(e) => setForm({ ...form, taskMode: e.target.value })}>
                 <option>Due By</option>
                 <option>Scheduled Start</option>
               </select>
@@ -180,12 +307,14 @@ export default function AdminPage() {
               </div>
             </details>
 
-            <button className="button primary wide full" type="submit">Create Task</button>
+            <button className="button primary wide full" type="submit" disabled={saving}>
+              {saving ? "Saving…" : "Create Task"}
+            </button>
           </form>
 
           {tasks.length > 0 && (
             <>
-              <h2 style={{ marginTop: 22 }}>New Manual Tasks</h2>
+              <h2 style={{ marginTop: 22 }}>Cloud Tasks</h2>
               <div className="admin-list">
                 {tasks.map((task) => (
                   <div className="admin-row" key={task.id}>
@@ -193,7 +322,9 @@ export default function AdminPage() {
                       <strong>{task.name}</strong>
                       <small>{task.dueDate || "No date"} · {task.dueTime || "No time"} · {task.recurrence}</small>
                     </div>
-                    <span className={task.critical ? "pill orange" : "pill purple"}>{task.critical ? "Critical" : "Due By"}</span>
+                    <span className={task.critical ? "pill orange" : "pill purple"}>
+                      {task.critical ? "Critical" : task.taskMode === "scheduled_start" ? "Scheduled" : "Due By"}
+                    </span>
                   </div>
                 ))}
               </div>
