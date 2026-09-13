@@ -227,6 +227,11 @@ export default function AdminPage() {
         <div className="summary-card"><span>Follow-Up</span><strong>{followUpCount}</strong></div>
         <div className="summary-card"><span>Maintenance Due</span><strong>{overdueMaintenance.length}</strong></div>
         <div className="summary-card sync">
+          <span>Microsoft 365</span>
+          <strong>{microsoftStatus}</strong>
+          <small>{microsoftIdentity || "Mail + Calendar authorization"}</small>
+        </div>
+        <div className="summary-card sync">
           <span>Outlook Sync</span>
           <strong>{syncMessage}</strong>
           <small>{lastSync ? `Last sync ${lastSync.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "No successful Outlook sync yet"}</small>
