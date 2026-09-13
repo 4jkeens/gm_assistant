@@ -47,7 +47,9 @@ export default function AdminPage() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncMessage, setSyncMessage] = useState("Loading…");
   const [tasks, setTasks] = useState<ManualTask[]>([]);
-  const [saving, setSaving] = useState(false);\n  const [microsoftStatus, setMicrosoftStatus] = useState("Checking…");\n  const [microsoftIdentity, setMicrosoftIdentity] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [microsoftStatus, setMicrosoftStatus] = useState("Checking…");
+  const [microsoftIdentity, setMicrosoftIdentity] = useState("");
   const [form, setForm] = useState({
     name: "",
     dueDate: "",
