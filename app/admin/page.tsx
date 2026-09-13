@@ -118,6 +118,28 @@ export default function AdminPage() {
 
   useEffect(() => {
     loadCloudData();
+
+    fetch("/api/microsoft/status", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (data.connected) {
+          setMicrosoftStatus("Connected");
+          setMicrosoftIdentity(data.email || data.name || "");
+        } else {
+          setMicrosoftStatus("Not connected");
+        }
+      })
+      .catch(() => setMicrosoftStatus("Not connected"));
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("microsoft") === "connected") {
+      setMicrosoftStatus("Connected");
+    } else if (params.get("microsoft") === "error") {
+      setMicrosoftStatus("Blocked / error");
+      setMicrosoftIdentity(
+        params.get("message") || "Microsoft did not authorize the connection."
+      );
+    }
   }, []);
 
   const testAlert = async () => {
