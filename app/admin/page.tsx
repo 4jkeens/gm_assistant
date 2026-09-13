@@ -47,7 +47,7 @@ export default function AdminPage() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [syncMessage, setSyncMessage] = useState("Loading…");
   const [tasks, setTasks] = useState<ManualTask[]>([]);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState(false);\n  const [microsoftStatus, setMicrosoftStatus] = useState("Checking…");\n  const [microsoftIdentity, setMicrosoftIdentity] = useState("");
   const [form, setForm] = useState({
     name: "",
     dueDate: "",
@@ -215,7 +215,7 @@ export default function AdminPage() {
           <p>Laptop controls for tasks, rules, maintenance, and Outlook sync.</p>
         </div>
         <div className="admin-actions">
-          <Link className="button ghost" href="/">Open Tablet View</Link>
+          <Link className="button ghost" href="/">Open Tablet View</Link>\n          <a className="button secondary" href="/api/microsoft/login">Connect Outlook</a>
           <button className="button secondary" onClick={testAlert}>Test Alert</button>
           <button className="button primary" onClick={refresh}>Refresh Now</button>
         </div>
